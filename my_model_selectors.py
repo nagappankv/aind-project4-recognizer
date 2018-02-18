@@ -75,9 +75,35 @@ class SelectorBIC(ModelSelector):
         :return: GaussianHMM object
         """
         warnings.filterwarnings("ignore", category=DeprecationWarning)
+		# implement model selection based on BIC scores
+        lowest_bic = float('inf')
+        best_model = None
+        for n_components in range(self.min_n_components, self.max_n_components + 1):
+            try:
+                hmm_model = self.base_model(n_components)
 
-        # TODO implement model selection based on BIC scores
-        raise NotImplementedError
+                # BIC = -2 log L + p log N
+                # L = log likelihood
+                # p = number of parameters in model
+                # N = number of data points
+
+                logL = hmm_model.score(self.X, self.lengths)
+
+                # p = n^2 + 2*d*n - 1
+                # n = components (different to the big N)
+                # d = features
+                p = (n_components * n_components + 2 * hmm_model.n_features * n_components - 1)
+
+                # BIC = -2 log L + p log N
+                BIC = -2 * logL + p * np.log(len(self.X))
+
+                if BIC < lowest_bic:
+                    lowest_bic = BIC
+                    best_model = hmm_model
+            except Exception:
+                continue
+
+        return best_model
 
 
 class SelectorDIC(ModelSelector):
@@ -92,18 +118,82 @@ class SelectorDIC(ModelSelector):
 
     def select(self):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
+		
+        # implement model selection based on DIC scores
+        highest_dic = float('-inf')
+        best_model = None
+        for n_components in range(self.min_n_components, self.max_n_components + 1):
+            try:
+                # train the whole model
+                model = self.base_model(n_components)
+                # get the data for the word we are trying to score for
+                X_word, lengths_word = self.hwords[self.this_word]
+                # log likelihood 
+                target_logL = model.score(X_word, lengths_word)
+            except Exception:
+                continue
 
-        # TODO implement model selection based on DIC scores
-        raise NotImplementedError
+            antiLogL = 0
+            word_count = 0
+            for word in self.words:
+                if word is not self.this_word:
+                    # get the data for each other word
+                    X_word, lengths_word = self.hwords[word]
+                    try:
+                        logL_word = model.score(X_word, lengths_word)
+                        antiLogL += logL_word
+                        word_count += 1
+                    except Exception:
+                        continue
+
+            # DIC = log(P(X(i)) - 1/(M-1)SUM(log(P(X(all but i))
+            DIC = target_logL - (1 / (word_count - 1)) * antiLogL
+
+            if DIC > highest_dic:
+                highest_dic = DIC
+                best_model = model
+
+        return best_model
 
 
 class SelectorCV(ModelSelector):
     ''' select best model based on average log Likelihood of cross-validation folds
 
     '''
+    
+    n_splits = 3
 
     def select(self):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
-        # TODO implement model selection using CV
-        raise NotImplementedError
+        # implement model selection using CV
+        best_score = float("-inf") 
+        best_model = None
+        
+        for n_components in range(self.min_n_components, self.max_n_components + 1):
+            scores, n_splits = [], SelectorCV.n_splits
+            model, logL = None, None
+            
+            if(len(self.sequences) < n_splits):
+                break
+            
+            split_method = KFold(random_state=self.random_state, n_splits=n_splits)
+            for train_idx, test_idx in split_method.split(self.sequences):
+                X_train, lengths_train = combine_sequences(train_idx, self.sequences)
+                X_test,  lengths_test  = combine_sequences(test_idx, self.sequences)
+                try:
+                    model = GaussianHMM(n_components=n_components, covariance_type="diag", n_iter=1000, random_state=inst.random_state, verbose=False).fit(X_train, lengths_train)
+                    logL = model.score(X_test, lengths_test)
+                    scores.append(logL)
+                except Exception as e:
+                    break
+            
+            avg = np.average(scores) if len(scores) > 0 else float("-inf")
+            
+            if avg > best_score:
+                best_score, best_model = avg, model
+        
+        if best_model is not None:
+            return best_model
+        else:
+             return self.base_model(self.n_constant)
